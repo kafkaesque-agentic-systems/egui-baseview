@@ -89,7 +89,9 @@ where
     pointer_pos_in_points: Option<egui::Pos2>,
     current_cursor_icon: baseview::MouseCursor,
 
-    renderer: Renderer,
+    /// `None` when the graphics backend could not start (no OpenGL context): the window
+    /// stays open and blank rather than panicking inside the host.
+    renderer: Option<Renderer>,
 
     clipboard_ctx: Option<copypasta::ClipboardContext>,
 
@@ -120,11 +122,11 @@ where
         B: FnMut(&egui::Context, &mut Queue, &mut State),
         B: 'static + Send,
     {
-        let renderer = Renderer::new(window, graphics_config).unwrap_or_else(|err| {
-            // TODO: better error log and not panicking, but that's gonna require baseview changes
-            log::error!("oops! the gpu backend couldn't initialize! \n {err}");
-            panic!("gpu backend failed to initialize: \n {err}")
-        });
+        let renderer = Renderer::new(window, graphics_config)
+            .map_err(|err| {
+                log::error!("the gpu backend could not initialize, drawing nothing: {err}")
+            })
+            .ok();
         let egui_ctx = egui::Context::default();
 
         // Assume scale for now until there is an event with a new one.
@@ -153,7 +155,7 @@ where
         let viewport_id = egui::ViewportId::default();
 
         let mut egui_input = egui::RawInput {
-            max_texture_side: Some(renderer.max_texture_side()),
+            max_texture_side: renderer.as_ref().map(Renderer::max_texture_side),
             screen_rect: Some(screen_rect),
             ..Default::default()
         };
@@ -346,15 +348,17 @@ where
         };
 
         if do_repaint_now {
-            self.renderer.render(
-                #[cfg(feature = "opengl")]
-                window,
-                self.bg_color,
-                self.physical_size,
-                self.pixels_per_point,
-                &mut self.egui_ctx,
-                &mut full_output,
-            );
+            if let Some(renderer) = self.renderer.as_mut() {
+                renderer.render(
+                    #[cfg(feature = "opengl")]
+                    window,
+                    self.bg_color,
+                    self.physical_size,
+                    self.pixels_per_point,
+                    &mut self.egui_ctx,
+                    &mut full_output,
+                );
+            }
 
             self.repaint_after = None;
         } else if let Some(repaint_after) = now.checked_add(viewport_output.repaint_delay) {
